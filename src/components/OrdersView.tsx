@@ -21,12 +21,13 @@ interface OrdersViewProps {
   onUpdateOrderStatus: (order: Order, newStatus: OrderStatus) => void;
   onUpdateVariant?: (order: Order, newVariant: string) => void;
   onUpdateSource?: (order: Order, newSource: string) => void;
+  onUpdateQuantity?: (order: Order, newQuantity: number) => void;
   onUpdateCourierStatus?: (order: Order, newCourierStatus: string) => void;
   onToggleSteadfast: (order: Order, action: 'No Sellect' | 'send to steadfast') => Promise<boolean> | void;
   onDeleteOrder?: (order: Order) => void;
 }
 
-type DropdownType = 'variant' | 'source' | 'status' | 'steadfast' | 'courierStatus';
+type DropdownType = 'variant' | 'source' | 'status' | 'steadfast';
 
 export const OrdersView: React.FC<OrdersViewProps> = ({
   orders,
@@ -37,7 +38,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
   onUpdateOrderStatus,
   onUpdateVariant,
   onUpdateSource,
-  onUpdateCourierStatus,
+  onUpdateQuantity,
   onToggleSteadfast,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
@@ -566,9 +567,54 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                   </div>
                 </div>
 
-                {/* Line 3: Product Name (Column E) */}
-                <div className="mt-0.5 text-xs text-gray-400 font-normal truncate">
-                  <span className="text-gray-300 font-medium">{order.product || 'Golden Watch Combo'}</span>
+                {/* Line 3: Product Name (Column E) on Left, Quantity (Column N) Editor on Right */}
+                <div className="mt-1 flex items-center justify-between gap-2 text-xs">
+                  <div className="text-gray-300 font-medium truncate">
+                    <span>{order.product || 'Golden Watch Combo'}</span>
+                  </div>
+
+                  {/* TOGGLE / Stepper: Column N (Quantity - Editable) */}
+                  <div
+                    onClick={(e) => e.stopPropagation()}
+                    className="shrink-0 flex items-center gap-1.5 bg-[#171822] border border-[#2b2d3d] rounded-md px-2 py-0.5 shadow-xs"
+                    title="N: অর্ডারের পরিমাণ (Quantity) পরিবর্তন করুন"
+                  >
+                    <span className="text-[10px] text-gray-400 font-bold">N:</span>
+                    <span className="text-xs font-mono font-bold text-emerald-300 min-w-[20px] text-center">
+                      {order.quantity || 1}টি
+                    </span>
+                    <div className="flex items-center gap-1 ml-0.5">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const currentQty = order.quantity || 1;
+                          if (currentQty > 1 && onUpdateQuantity) {
+                            onUpdateQuantity(order, currentQty - 1);
+                          }
+                        }}
+                        disabled={(order.quantity || 1) <= 1}
+                        className="w-4 h-4 rounded flex items-center justify-center bg-[#252636] hover:bg-[#35384c] text-gray-200 disabled:opacity-30 text-xs font-bold leading-none cursor-pointer"
+                        title="পরিমাণ কমান"
+                      >
+                        -
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const currentQty = order.quantity || 1;
+                          if (onUpdateQuantity) {
+                            onUpdateQuantity(order, currentQty + 1);
+                          }
+                        }}
+                        className="w-4 h-4 rounded flex items-center justify-center bg-[#252636] hover:bg-[#35384c] text-gray-200 text-xs font-bold leading-none cursor-pointer"
+                        title="পরিমাণ বাড়ান"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
                 {/* Line 4: The 3 remaining buttons managed in 1 single line (H: Variant, I: Source, M: Steadfast) */}
@@ -729,18 +775,19 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                   </div>
                 </div>
 
-                {/* Line 5: 2 Buttons - Tracker Code / Entry Button & Delivery Status */}
+                {/* Line 5: 2 Buttons (K & L Read-Only) - Tracker Code (Col K) & Delivery Status (Col L) */}
                 <div className="mt-2 pt-2 border-t border-[#1f212c] flex items-center justify-between gap-2 text-xs">
                   <div className="flex items-center gap-2 flex-wrap min-w-0">
-                    {/* BUTTON 1: Tracker Code (if entry done) or Entry Button (if entry not done) */}
+                    {/* BUTTON 1: Column K (Courier ID / Tracking Code - Auto Read from Sheet) */}
                     {order.trackingCode ? (
                       <button
                         type="button"
                         onClick={(e) => handleCopyTracking(e, order.trackingCode!)}
                         className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] sm:text-xs font-mono font-medium bg-[#111927] hover:bg-[#172338] text-cyan-300 border border-[#0284c7]/40 transition-all cursor-pointer shadow-xs active:scale-95"
-                        title="ট্র্যাকিং কোড কপি করতে চাপুন"
+                        title="K: ট্র্যাকিং কোড কপি করতে চাপুন"
                       >
                         <Truck className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                        <span className="text-[10px] text-cyan-500 font-bold">K:</span>
                         <span className="truncate max-w-[130px] font-semibold">{order.trackingCode}</span>
                         {copiedTracking === order.trackingCode ? (
                           <span className="text-[10px] text-emerald-400 font-sans font-semibold flex items-center gap-0.5">
@@ -751,80 +798,61 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                           <Copy className="w-3 h-3 text-gray-400 opacity-70 hover:opacity-100 shrink-0" />
                         )}
                       </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={(e) => handleSteadfastAction(e, order, 'send to steadfast', orderKey)}
-                        disabled={isDispatchingKey === orderKey}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] sm:text-xs font-semibold bg-[#1d1424] hover:bg-[#2b1836] text-pink-400 hover:text-pink-300 border border-pink-500/40 hover:border-pink-500/70 transition-all cursor-pointer shadow-xs active:scale-95 disabled:opacity-50"
-                        title="কুরিয়ার এন্ট্রি করতে চাপুন"
+                    ) : isSteadfastSent ? (
+                      <div
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] sm:text-xs font-mono font-medium bg-[#131926] text-cyan-300 border border-cyan-800/40"
+                        title="K: শিট থেকে অটোমেটিক ট্র্যাকিং কোড আসার অপেক্ষায়..."
                       >
-                        <Truck className="w-3.5 h-3.5 text-pink-400 shrink-0" />
-                        <span>{isDispatchingKey === orderKey ? 'এন্ট্রি হচ্ছে...' : 'Entry'}</span>
-                      </button>
+                        <Truck className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                        <span className="text-[10px] text-cyan-500 font-bold">K:</span>
+                        <span className="animate-pulse text-cyan-300 text-[11px]">অটো ট্র্যাকিং...</span>
+                      </div>
+                    ) : (
+                      <div
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] sm:text-xs font-mono text-gray-500 bg-[#12131a] border border-[#232533]"
+                        title="K: ট্র্যাকিং কোড নেই (send to steadfast দিলে অটোমেটিক আসবে)"
+                      >
+                        <Truck className="w-3.5 h-3.5 text-gray-600 shrink-0" />
+                        <span className="text-[10px] text-gray-600 font-bold">K:</span>
+                        <span>খালি</span>
+                      </div>
                     )}
 
-                    {/* BUTTON 2: Delivery Status Button (with color combination & dropdown) */}
-                    <div className="relative min-w-0">
-                      {(() => {
-                        const deliveryStyle = getDeliveryStatusStyle(order.courierStatus, Boolean(order.trackingCode));
-                        return (
-                          <>
-                            <button
-                              type="button"
-                              onClick={(e) => toggleDropdown(e, orderKey, 'courierStatus')}
-                              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] sm:text-xs font-semibold border transition-all cursor-pointer ${deliveryStyle.badge}`}
-                              title="ডেলিভারি স্ট্যাটাস পরিবর্তন করতে চাপুন"
-                            >
-                              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${deliveryStyle.dot}`} />
-                              <span className="font-mono">{deliveryStyle.label}</span>
-                              <ChevronDown className="w-3 h-3 opacity-70 ml-0.5 shrink-0" />
-                            </button>
-
-                            {activeDropdown?.orderKey === orderKey && activeDropdown?.type === 'courierStatus' && (
-                              <div
-                                onClick={(e) => e.stopPropagation()}
-                                className="absolute left-0 bottom-full mb-1.5 w-48 max-h-60 overflow-y-auto bg-[#181822] border border-[#2f2f40] rounded-xl shadow-2xl py-1.5 z-40 animate-fadeIn"
-                              >
-                                <div className="px-3 py-1 text-[10px] text-gray-400 font-semibold border-b border-[#252535] sticky top-0 bg-[#181822] z-10">
-                                  ডেলিভারি স্ট্যাটাস সিলেক্ট করুন
-                                </div>
-                                {availableDeliveryStatuses.map((stOpt) => {
-                                  const optStyle = getDeliveryStatusStyle(stOpt, true);
-                                  const isSelected = deliveryStyle.key === optStyle.key;
-                                  return (
-                                    <button
-                                      key={stOpt}
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        if (onUpdateCourierStatus) {
-                                          onUpdateCourierStatus(order, stOpt);
-                                        }
-                                        setActiveDropdown(null);
-                                      }}
-                                      className="w-full text-left px-3 py-2 text-xs text-gray-200 hover:bg-[#252535] flex items-center justify-between transition-colors cursor-pointer"
-                                    >
-                                      <div className="flex items-center gap-2">
-                                        <span className={`w-2 h-2 rounded-full ${optStyle.dot}`} />
-                                        <span className={isSelected ? 'font-semibold text-white' : 'font-mono'}>{stOpt}</span>
-                                      </div>
-                                      {isSelected && <Check className="w-3.5 h-3.5 text-pink-400 shrink-0" />}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            )}
-                          </>
-                        );
-                      })()}
-                    </div>
+                    {/* BUTTON 2: Column L (Courier Status - Auto Read from Sheet) */}
+                    {(() => {
+                      const deliveryStyle = getDeliveryStatusStyle(
+                        order.courierStatus,
+                        Boolean(order.trackingCode)
+                      );
+                      return (
+                        <div
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] sm:text-xs font-semibold border transition-all ${deliveryStyle.badge}`}
+                          title="L: কুরিয়ার স্ট্যাটাস (গুগল শিটের কলাম L থেকে সরাসরি পড়া হচ্ছে)"
+                        >
+                          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${deliveryStyle.dot}`} />
+                          <span className="text-[10px] opacity-75 font-bold">L:</span>
+                          <span className="font-mono">
+                            {order.courierStatus || (isSteadfastSent ? 'in_review' : 'pending')}
+                          </span>
+                        </div>
+                      );
+                    })()}
                   </div>
 
-                  {/* Hint to see quantity inside */}
-                  <div className="text-[10px] text-gray-500 italic ml-auto hidden sm:block">
-                    ক্লিক করলে বিবরণ দেখা যাবে
-                  </div>
+                  {/* Sync K & L from sheet */}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSyncSheet();
+                    }}
+                    disabled={isSyncing}
+                    className="p-1.5 rounded-md hover:bg-[#20212d] text-gray-400 hover:text-cyan-300 transition-colors ml-auto shrink-0 flex items-center gap-1 text-[11px]"
+                    title="কলাম K ও L গুগল শিট থেকে রিফ্রেশ করুন"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin text-cyan-400' : ''}`} />
+                    <span className="text-[10px] text-gray-400 hidden sm:inline">K, L সিঙ্ক</span>
+                  </button>
                 </div>
               </div>
             );

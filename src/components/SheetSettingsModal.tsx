@@ -7,9 +7,18 @@ import {
   Layers,
   ShieldCheck,
   LogOut,
+  Code2,
+  Copy,
+  ExternalLink,
+  Zap,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import { GoogleSignInButton } from './GoogleSignInButton';
+import {
+  COMPLETE_APPS_SCRIPT_CODE,
+  getAppsScriptUrl,
+  saveAppsScriptUrl,
+} from '../services/sheets';
 
 interface SheetSettingsModalProps {
   isOpen: boolean;
@@ -44,6 +53,9 @@ export const SheetSettingsModal: React.FC<SheetSettingsModalProps> = ({
 }) => {
   const [inputVal, setInputVal] = useState(spreadsheetId);
   const [tabVal, setTabVal] = useState(selectedTab);
+  const [scriptUrl, setScriptUrl] = useState(getAppsScriptUrl());
+  const [showScriptCode, setShowScriptCode] = useState(false);
+  const [copiedCode, setCopiedCode] = useState(false);
 
   useEffect(() => {
     setInputVal(spreadsheetId);
@@ -53,12 +65,27 @@ export const SheetSettingsModal: React.FC<SheetSettingsModalProps> = ({
     setTabVal(selectedTab);
   }, [selectedTab]);
 
+  useEffect(() => {
+    setScriptUrl(getAppsScriptUrl());
+  }, [isOpen]);
+
   if (!isOpen) return null;
+
+  const handleCopyCode = () => {
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      navigator.clipboard.writeText(COMPLETE_APPS_SCRIPT_CODE);
+      setCopiedCode(true);
+      setTimeout(() => setCopiedCode(false), 2500);
+    }
+  };
 
   const handleSave = () => {
     onUpdateSpreadsheetId(inputVal.trim());
     if (onUpdateSelectedTab && tabVal.trim()) {
       onUpdateSelectedTab(tabVal.trim());
+    }
+    if (scriptUrl.trim()) {
+      saveAppsScriptUrl(scriptUrl.trim());
     }
     onClose();
   };
@@ -201,6 +228,80 @@ export const SheetSettingsModal: React.FC<SheetSettingsModalProps> = ({
             <p className="text-[11px] text-gray-400">
               শুধুমাত্র এই সিলেক্ট করা ট্যাবের কাস্টমার অর্ডারগুলোই সিঙ্ক হবে।
             </p>
+          </div>
+
+          {/* Apps Script Web App Integration (Auto Sheet Write) */}
+          <div className="bg-[#151926] border border-[#232b40] rounded-xl p-3.5 space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
+                <Zap className="w-4 h-4 text-amber-400" />
+                <span>Google Apps Script ইন্টিগ্রেশন (শিট অটো-আপডেট)</span>
+              </label>
+              <button
+                type="button"
+                onClick={() => setShowScriptCode(!showScriptCode)}
+                className="text-[11px] text-amber-400 hover:text-amber-300 flex items-center gap-1 font-medium"
+              >
+                <Code2 className="w-3.5 h-3.5" />
+                <span>{showScriptCode ? 'কোড লুকান' : 'কোড দেখুন ও কপি করুন'}</span>
+              </button>
+            </div>
+
+            <p className="text-[11px] text-gray-400 leading-relaxed">
+              অ্যাপ থেকে কলাম H, I, J, M, N এডিট করলে সরাসরি গুগল শিটে সেভ হওয়ার জন্য Apps Script Web App কাজ করে।
+            </p>
+
+            <div>
+              <label className="text-[11px] text-gray-400 block mb-1">
+                Apps Script Web App URL (ডিফল্ট প্রস্তুত আছে):
+              </label>
+              <input
+                type="text"
+                value={scriptUrl}
+                onChange={(e) => setScriptUrl(e.target.value)}
+                placeholder="https://script.google.com/macros/s/.../exec"
+                className="w-full bg-[#0f121a] border border-[#262f44] rounded-lg px-3 py-2 text-xs font-mono text-amber-300 focus:outline-none focus:border-amber-500"
+              />
+            </div>
+
+            {/* Expandable Code Box */}
+            {showScriptCode && (
+              <div className="mt-3 p-3 bg-[#0d1017] border border-[#262f44] rounded-xl space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-semibold text-gray-300">
+                    Sheet2 এর জন্য সম্পূর্ণ Apps Script কোড:
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleCopyCode}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-[11px] font-medium border border-amber-500/40 transition-colors"
+                  >
+                    {copiedCode ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        <span className="text-emerald-300">কপি হয়েছে!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>কোড কপি করুন</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                <div className="text-[10px] text-gray-400 space-y-1 bg-[#121622] p-2.5 rounded-lg border border-[#1f2738]">
+                  <p className="font-semibold text-amber-300">কিভাবে যুক্ত করবেন (৩টি সহজ ধাপ):</p>
+                  <p>১. আপনার গুগল শিটে যান ও মেনু থেকে <strong>Extensions &gt; Apps Script</strong>-এ ক্লিক করুন।</p>
+                  <p>২. বিদ্যমান কোড মুছে দিয়ে উপরের <strong>"কোড কপি করুন"</strong> বাটন দিয়ে কোডটি পেস্ট করুন এবং Save করুন।</p>
+                  <p>৩. উপরে <strong>Deploy &gt; New deployment</strong> এ গিয়ে Type: <strong>Web app</strong>, Who has access: <strong>Anyone</strong> দিয়ে <strong>Deploy</strong> করুন।</p>
+                </div>
+
+                <pre className="text-[10px] font-mono text-gray-400 bg-black/60 p-2.5 rounded-lg max-h-36 overflow-y-auto whitespace-pre">
+                  {COMPLETE_APPS_SCRIPT_CODE}
+                </pre>
+              </div>
+            )}
           </div>
 
           {/* Sync Trigger */}

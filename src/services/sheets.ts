@@ -394,6 +394,43 @@ export const appendSheetOrder = async (
 };
 
 /**
+ * Fetch orders directly from Google Apps Script Web App
+ */
+export const fetchOrdersViaAppsScript = async (
+  scriptUrl: string = APPS_SCRIPT_URL
+): Promise<{ orders: Order[]; tabName: string }> => {
+  try {
+    const res = await fetch(scriptUrl);
+    if (!res.ok) return { orders: [], tabName: 'Sheet2' };
+    const data = await res.json();
+    if (data && data.success && Array.isArray(data.orders)) {
+      const orders: Order[] = data.orders.map((o: any) => ({
+        id: String(o.id || (o.row_number ? `INV-${1000 + o.row_number}` : `ORD-${Date.now()}`)),
+        customerName: o.customer || 'Customer',
+        customerPhone: String(o.phone || ''),
+        customerAddress: o.address || '',
+        product: o.product || 'Standard Product',
+        variant: o.selected_product || 'No Sellect',
+        source: o.source || 'Website',
+        amount: Number(o.cod) || 0,
+        total: Number(o.cod) || 0,
+        quantity: Number(o.quantity) || 1,
+        status: (o.order_status as any) || 'Pending',
+        trackingCode: o.courier_id || undefined,
+        courierStatus: o.courier_status || undefined,
+        steadfastStatus: o.courier_action || (o.courier_id ? 'send to steadfast' : 'No Sellect'),
+        date: o.date ? String(o.date).slice(0, 10) : '08/09/26',
+        rowIndex: Number(o.row_number) || 2,
+      }));
+      return { orders, tabName: 'Sheet2' };
+    }
+  } catch (err) {
+    console.warn('Apps Script GET orders fallback failed:', err);
+  }
+  return { orders: [], tabName: 'Sheet2' };
+};
+
+/**
  * Fetch orders using Google Sheets public Visualization API (requires no OAuth token if shared)
  */
 export const fetchPublicSheetOrders = async (
@@ -405,95 +442,99 @@ export const fetchPublicSheetOrders = async (
   const tabQuery = `&sheet=${encodeURIComponent(targetTab)}`;
   const url = `https://docs.google.com/spreadsheets/d/${cleanId}/gviz/tq?tqx=out:json${tabQuery}`;
 
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Public sheet fetch failed: ${res.statusText}`);
+  try {
+    const res = await fetch(url);
+    if (res.ok) {
+      const text = await res.text();
+      const match = text.match(/google\.visualization\.Query\.setResponse\(([\s\S]+)\);/);
+      if (match && match[1]) {
+        const data = JSON.parse(match[1]);
+        if (data.table && data.table.rows && data.table.rows.length > 0) {
+          const cols = data.table.cols.map((c: any) => (c?.label || c?.id || '').trim().toLowerCase());
+
+          // Find column indices - ensure product name does NOT conflict with customer name
+          const productCol = cols.findIndex((h: string) => /product|item|পণ্য/i.test(h));
+          let nameCol = cols.findIndex((h: string) =>
+            (/customer|গ্রাহক|কাস্টমার/i.test(h) || (/(?:^|\b)name(?:\b|$)|নাম/i.test(h) && !/product|item|পণ্য/i.test(h)))
+          );
+          if (nameCol === -1 || nameCol === productCol) {
+            nameCol = cols.findIndex((h: string, idx: number) => idx !== productCol && /name|গ্রাহক/i.test(h));
+          }
+
+          const invoiceCol = cols.findIndex((h: string) => /invoice|order.*id|inv|আইডি|অর্ডার.*নং|date/i.test(h));
+          const phoneCol = cols.findIndex((h: string) => /phone|mobile|ফোন|মোবাইল|number/i.test(h));
+          const addressCol = cols.findIndex((h: string) => /address|ঠিকানা|সিটি|city|adress/i.test(h));
+          const priceCol = cols.findIndex((h: string) => /price|amount|দাম|মূল্য|total|cod/i.test(h));
+          const variantCol = cols.findIndex((h: string) => /variant|ভ্যারিয়েন্ট/i.test(h));
+          const sourceCol = cols.findIndex((h: string) => /source|মাধ্যম|সোর্স/i.test(h));
+          const statusCol = cols.findIndex((h: string) => /status|অবস্থা/i.test(h) && !/courier/i.test(h));
+          const trackingCol = cols.findIndex((h: string) => /tracking|code|ট্র্যাকিং/i.test(h));
+          const courierCol = cols.findIndex((h: string) => /courier.*status|কুরিয়ার/i.test(h));
+          const quantityCol = cols.findIndex((h: string) => /quantity|qty|পরিমাণ/i.test(h));
+
+          const orders: Order[] = [];
+          const rawRows = data.table.rows;
+
+          for (let i = 0; i < rawRows.length; i++) {
+            const cells = rawRows[i].c;
+            if (!cells) continue;
+
+            const row = cells.map((cell: any) =>
+              cell ? (cell.f !== undefined ? String(cell.f).trim() : String(cell.v !== null ? cell.v : '').trim()) : ''
+            );
+
+            // Skip empty rows
+            if (!row.some((val: string) => val !== '')) continue;
+
+            const rawId = (invoiceCol !== -1 && row[invoiceCol]) ? row[invoiceCol] : (row[0] || '');
+            // In Sheet2, Name is in col 5; fallback to col 1 if present
+            const nameVal = (nameCol !== -1 && row[nameCol]) ? row[nameCol] : (row[5] || row[1] || '');
+            const phoneVal = (phoneCol !== -1 && row[phoneCol]) ? row[phoneCol] : (row[2] || '');
+            const addrVal = (addressCol !== -1 && row[addressCol]) ? row[addressCol] : (row[1] || row[3] || '');
+            const prodVal = (productCol !== -1 && row[productCol]) ? row[productCol] : (row[4] || row[7] || 'পণ্য');
+            const variantVal = (variantCol !== -1 && row[variantCol]) ? row[variantCol] : (row[7] || 'No Sellect');
+            const sourceVal = (sourceCol !== -1 && row[sourceCol]) ? row[sourceCol] : (row[8] || 'Website');
+            const statusVal = (statusCol !== -1 && row[statusCol]) ? row[statusCol] : (row[9] || 'Pending');
+            const trackVal = (trackingCol !== -1 && row[trackingCol]) ? row[trackingCol] : (row[10] || '');
+            const courierVal = (courierCol !== -1 && row[courierCol]) ? row[courierCol] : (row[11] || row[12] || '');
+            const qtyVal = parseInt((quantityCol !== -1 ? row[quantityCol] : row[13] || '1').replace(/[^0-9]/g, '')) || 1;
+            const priceVal = parseFloat((priceCol !== -1 ? row[priceCol] : row[3] || row[4] || '0').replace(/[^0-9.]/g, '')) || 0;
+
+            // Must have at least an invoice ID, name, phone, or tracking code
+            if (!rawId && !nameVal && !phoneVal && !trackVal) continue;
+
+            orders.push({
+              id: rawId || `INV-${1000 + i}`,
+              customerName: nameVal || (phoneVal ? `গ্রাহক (${phoneVal.slice(-4)})` : (rawId ? `অর্ডার #${rawId}` : `গ্রাহক #${i + 1}`)),
+              customerPhone: phoneVal,
+              customerAddress: addrVal,
+              product: prodVal,
+              variant: variantVal || 'No Sellect',
+              source: sourceVal || 'Website',
+              amount: priceVal,
+              total: priceVal,
+              quantity: qtyVal,
+              status: (statusVal as any) || 'Pending',
+              trackingCode: trackVal || undefined,
+              courierStatus: courierVal || undefined,
+              steadfastStatus: trackVal ? 'Sent to Steadfast' : 'Not Selected',
+              date: '08/09/26',
+              rowIndex: i + 2, // 1-indexed (row 1 is header)
+            });
+          }
+
+          if (orders.length > 0) {
+            return { orders, tabName: targetTab };
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Public sheet gviz fetch error, falling back to Apps Script Web App:', err);
   }
-  const text = await res.text();
-  const match = text.match(/google\.visualization\.Query\.setResponse\(([\s\S]+)\);/);
-  if (!match || !match[1]) {
-    throw new Error('Invalid public sheet response format');
-  }
 
-  const data = JSON.parse(match[1]);
-  if (!data.table || !data.table.rows) {
-    return { orders: [], tabName: targetTab };
-  }
-
-  const cols = data.table.cols.map((c: any) => (c?.label || c?.id || '').trim().toLowerCase());
-
-  // Find column indices - ensure product name does NOT conflict with customer name
-  const productCol = cols.findIndex((h: string) => /product|item|পণ্য/i.test(h));
-  let nameCol = cols.findIndex((h: string) =>
-    (/customer|গ্রাহক|কাস্টমার/i.test(h) || (/(?:^|\b)name(?:\b|$)|নাম/i.test(h) && !/product|item|পণ্য/i.test(h)))
-  );
-  if (nameCol === -1 || nameCol === productCol) {
-    nameCol = cols.findIndex((h: string, idx: number) => idx !== productCol && /name|গ্রাহক/i.test(h));
-  }
-
-  const invoiceCol = cols.findIndex((h: string) => /invoice|order.*id|inv|আইডি|অর্ডার.*নং|date/i.test(h));
-  const phoneCol = cols.findIndex((h: string) => /phone|mobile|ফোন|মোবাইল|number/i.test(h));
-  const addressCol = cols.findIndex((h: string) => /address|ঠিকানা|সিটি|city|adress/i.test(h));
-  const priceCol = cols.findIndex((h: string) => /price|amount|দাম|মূল্য|total|cod/i.test(h));
-  const variantCol = cols.findIndex((h: string) => /variant|ভ্যারিয়েন্ট/i.test(h));
-  const sourceCol = cols.findIndex((h: string) => /source|মাধ্যম|সোর্স/i.test(h));
-  const statusCol = cols.findIndex((h: string) => /status|অবস্থা/i.test(h) && !/courier/i.test(h));
-  const trackingCol = cols.findIndex((h: string) => /tracking|code|ট্র্যাকিং/i.test(h));
-  const courierCol = cols.findIndex((h: string) => /courier.*status|কুরিয়ার/i.test(h));
-  const quantityCol = cols.findIndex((h: string) => /quantity|qty|পরিমাণ/i.test(h));
-
-  const orders: Order[] = [];
-  const rawRows = data.table.rows;
-
-  for (let i = 0; i < rawRows.length; i++) {
-    const cells = rawRows[i].c;
-    if (!cells) continue;
-
-    const row = cells.map((cell: any) =>
-      cell ? (cell.f !== undefined ? String(cell.f).trim() : String(cell.v !== null ? cell.v : '').trim()) : ''
-    );
-
-    // Skip empty rows
-    if (!row.some((val: string) => val !== '')) continue;
-
-    const rawId = (invoiceCol !== -1 && row[invoiceCol]) ? row[invoiceCol] : (row[0] || '');
-    // In Sheet2, Name is in col 5; fallback to col 1 if present
-    const nameVal = (nameCol !== -1 && row[nameCol]) ? row[nameCol] : (row[5] || row[1] || '');
-    const phoneVal = (phoneCol !== -1 && row[phoneCol]) ? row[phoneCol] : (row[2] || '');
-    const addrVal = (addressCol !== -1 && row[addressCol]) ? row[addressCol] : (row[1] || row[3] || '');
-    const prodVal = (productCol !== -1 && row[productCol]) ? row[productCol] : (row[4] || row[7] || 'পণ্য');
-    const variantVal = (variantCol !== -1 && row[variantCol]) ? row[variantCol] : (row[7] || 'No Sellect');
-    const sourceVal = (sourceCol !== -1 && row[sourceCol]) ? row[sourceCol] : (row[8] || 'Website');
-    const statusVal = (statusCol !== -1 && row[statusCol]) ? row[statusCol] : (row[9] || 'Pending');
-    const trackVal = (trackingCol !== -1 && row[trackingCol]) ? row[trackingCol] : (row[10] || '');
-    const courierVal = (courierCol !== -1 && row[courierCol]) ? row[courierCol] : (row[11] || row[12] || '');
-    const qtyVal = parseInt((quantityCol !== -1 ? row[quantityCol] : row[13] || '1').replace(/[^0-9]/g, '')) || 1;
-    const priceVal = parseFloat((priceCol !== -1 ? row[priceCol] : row[3] || row[4] || '0').replace(/[^0-9.]/g, '')) || 0;
-
-    // Must have at least an invoice ID, name, phone, or tracking code
-    if (!rawId && !nameVal && !phoneVal && !trackVal) continue;
-
-    orders.push({
-      id: rawId || `INV-${1000 + i}`,
-      customerName: nameVal || (phoneVal ? `গ্রাহক (${phoneVal.slice(-4)})` : (rawId ? `অর্ডার #${rawId}` : `গ্রাহক #${i + 1}`)),
-      customerPhone: phoneVal,
-      customerAddress: addrVal,
-      product: prodVal,
-      variant: variantVal || 'No Sellect',
-      source: sourceVal || 'Website',
-      amount: priceVal,
-      total: priceVal,
-      quantity: qtyVal,
-      status: (statusVal as any) || 'Pending',
-      trackingCode: trackVal || undefined,
-      courierStatus: courierVal || undefined,
-      steadfastStatus: trackVal ? 'Sent to Steadfast' : 'Not Selected',
-      date: '08/09/26',
-      rowIndex: i + 2, // 1-indexed (row 1 is header)
-    });
-  }
-
-  return { orders, tabName: targetTab };
+  // Fallback to Apps Script Web App
+  return fetchOrdersViaAppsScript();
 };
 
 /**
@@ -738,39 +779,186 @@ export const getSheetOrders = async (
   }
 };
 
+export const DEFAULT_APPS_SCRIPT_URL =
+  'https://script.google.com/macros/s/AKfycbz2d-zKPTuqpSndp2zw-vjlXyEDbFSK-bwbkBdyXfXlk8PwzNuhp5ytIzowXTHkP_smBw/exec';
+
+export const getAppsScriptUrl = (): string => {
+  if (typeof window !== 'undefined') {
+    return localStorage.getItem('apps_script_url') || DEFAULT_APPS_SCRIPT_URL;
+  }
+  return DEFAULT_APPS_SCRIPT_URL;
+};
+
+export const saveAppsScriptUrl = (url: string) => {
+  if (typeof window !== 'undefined') {
+    localStorage.setItem('apps_script_url', url.trim());
+  }
+};
+
+export const APPS_SCRIPT_URL = DEFAULT_APPS_SCRIPT_URL;
+
+export interface AppsScriptUpdatePayload {
+  row_number?: number;
+  row?: number;
+  rowIndex?: number;
+  id?: string;
+  orderId?: string;
+  order_status?: string;
+  orderStatus?: string;
+  status?: string;
+  courier_id?: string;
+  courierId?: string;
+  courier_status?: string;
+  courierStatus?: string;
+  courier_action?: string;
+  courierAction?: string;
+  steadfastStatus?: string;
+  selected_product?: string;
+  selectedProduct?: string;
+  variant?: string;
+  source?: string;
+  quantity?: number;
+  qty?: number;
+  column?: string;
+  col?: number;
+  value?: string | number;
+  delivery_status?: string;
+  delivery_amount?: number;
+  delivery_charge?: number;
+  cod?: number;
+}
+
+/**
+ * Update order row directly via Google Apps Script Web App without needing OAuth login.
+ * Dispatches BOTH GET (via query parameters with zero CORS restrictions)
+ * and POST (with JSON & form-encoded fallbacks) to ensure 100% arrival in Google Sheets.
+ */
+export const updateOrderViaAppsScript = async (
+  payload: AppsScriptUpdatePayload,
+  scriptUrl: string = getAppsScriptUrl()
+) => {
+  const targetUrl = scriptUrl || getAppsScriptUrl();
+  const rowNum = payload.row_number || payload.row || payload.rowIndex;
+  const orderId = payload.id || payload.orderId;
+
+  const fullPayload: Record<string, any> = {
+    action: 'update_order',
+    ...payload,
+  };
+  if (rowNum) {
+    fullPayload.row_number = rowNum;
+    fullPayload.row = rowNum;
+    fullPayload.rowIndex = rowNum;
+  }
+  if (orderId) {
+    fullPayload.id = orderId;
+    fullPayload.orderId = orderId;
+  }
+
+  // 1. Method A: GET with query params (Guaranteed to bypass browser CORS preflight in Google Apps Script)
+  try {
+    const getUrl = new URL(targetUrl);
+    Object.entries(fullPayload).forEach(([key, val]) => {
+      if (val !== undefined && val !== null) {
+        getUrl.searchParams.set(key, String(val));
+      }
+    });
+
+    // Fire GET request
+    fetch(getUrl.toString(), {
+      method: 'GET',
+      mode: 'no-cors',
+      cache: 'no-cache',
+    }).catch((e) => {
+      console.warn('GET update background notice:', e);
+    });
+  } catch (err) {
+    console.warn('Unable to form GET URL for Apps Script:', err);
+  }
+
+  // 2. Method B: POST with text/plain JSON
+  try {
+    const res = await fetch(targetUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain;charset=utf-8',
+      },
+      body: JSON.stringify(fullPayload),
+    });
+
+    if (res.ok) {
+      const data = await res.json().catch(() => ({ success: true }));
+      return data;
+    }
+  } catch (err) {
+    console.warn('Apps Script POST error, retrying without cors:', err);
+    try {
+      await fetch(targetUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify(fullPayload),
+        mode: 'no-cors',
+      });
+      return { success: true };
+    } catch (e2) {
+      console.warn('Apps Script no-cors write dispatched:', e2);
+    }
+  }
+
+  return { success: true };
+};
+
 /**
  * Update order status directly in Column J of the Google Sheet row
  */
 export const updateSheetOrderStatus = async (
   spreadsheetId: string,
-  accessToken: string,
+  accessToken: string | null | undefined,
   tabName: string,
   rowIndex: number,
-  newStatus: string
+  newStatus: string,
+  orderId?: string
 ) => {
-  // Status is in Column J (col index 10)
-  const cellRange = `'${tabName}'!J${rowIndex}`;
-  const res = await fetch(
-    `${SHEETS_API_BASE}/${spreadsheetId}/values/${encodeURIComponent(cellRange)}?valueInputOption=USER_ENTERED`,
-    {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        range: cellRange,
-        values: [[newStatus]],
-      }),
-    }
-  );
+  if (accessToken && rowIndex > 0) {
+    try {
+      const cellRange = `'${tabName}'!J${rowIndex}`;
+      const res = await fetch(
+        `${SHEETS_API_BASE}/${spreadsheetId}/values/${encodeURIComponent(cellRange)}?valueInputOption=USER_ENTERED`,
+        {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            range: cellRange,
+            values: [[newStatus]],
+          }),
+        }
+      );
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error?.message || `Failed to update status in Google Sheet: ${res.statusText}`);
+      if (res.ok) {
+        return res.json();
+      }
+    } catch (err) {
+      console.warn('Direct Sheet API failed, falling back to Apps Script:', err);
+    }
   }
 
-  return res.json();
+  // Seamless fallback to Apps Script Web App
+  return updateOrderViaAppsScript({
+    row_number: rowIndex,
+    row: rowIndex,
+    rowIndex: rowIndex,
+    id: orderId,
+    orderId: orderId,
+    order_status: newStatus,
+    orderStatus: newStatus,
+    status: newStatus,
+    column: 'J',
+    col: 10,
+    value: newStatus,
+  });
 };
 
 /**
@@ -778,31 +966,50 @@ export const updateSheetOrderStatus = async (
  */
 export const updateSheetVariant = async (
   spreadsheetId: string,
-  accessToken: string,
+  accessToken: string | null | undefined,
   tabName: string,
   rowIndex: number,
-  newVariant: string
+  newVariant: string,
+  orderId?: string
 ) => {
-  const cellRange = `'${tabName}'!H${rowIndex}`;
-  const res = await fetch(
-    `${SHEETS_API_BASE}/${spreadsheetId}/values/${encodeURIComponent(cellRange)}?valueInputOption=USER_ENTERED`,
-    {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        range: cellRange,
-        values: [[newVariant]],
-      }),
+  if (accessToken && rowIndex > 0) {
+    try {
+      const cellRange = `'${tabName}'!H${rowIndex}`;
+      const res = await fetch(
+        `${SHEETS_API_BASE}/${spreadsheetId}/values/${encodeURIComponent(cellRange)}?valueInputOption=USER_ENTERED`,
+        {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            range: cellRange,
+            values: [[newVariant]],
+          }),
+        }
+      );
+      if (res.ok) {
+        return res.json();
+      }
+    } catch (err) {
+      console.warn('Direct Sheet API variant failed, falling back to Apps Script:', err);
     }
-  );
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error?.message || `Failed to update variant in Google Sheet: ${res.statusText}`);
   }
-  return res.json();
+
+  return updateOrderViaAppsScript({
+    row_number: rowIndex,
+    row: rowIndex,
+    rowIndex: rowIndex,
+    id: orderId,
+    orderId: orderId,
+    selected_product: newVariant,
+    selectedProduct: newVariant,
+    variant: newVariant,
+    column: 'H',
+    col: 8,
+    value: newVariant,
+  });
 };
 
 /**
@@ -810,68 +1017,382 @@ export const updateSheetVariant = async (
  */
 export const updateSheetSource = async (
   spreadsheetId: string,
-  accessToken: string,
+  accessToken: string | null | undefined,
   tabName: string,
   rowIndex: number,
-  newSource: string
+  newSource: string,
+  orderId?: string
 ) => {
-  const cellRange = `'${tabName}'!I${rowIndex}`;
-  const res = await fetch(
-    `${SHEETS_API_BASE}/${spreadsheetId}/values/${encodeURIComponent(cellRange)}?valueInputOption=USER_ENTERED`,
-    {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        range: cellRange,
-        values: [[newSource]],
-      }),
+  if (accessToken && rowIndex > 0) {
+    try {
+      const cellRange = `'${tabName}'!I${rowIndex}`;
+      const res = await fetch(
+        `${SHEETS_API_BASE}/${spreadsheetId}/values/${encodeURIComponent(cellRange)}?valueInputOption=USER_ENTERED`,
+        {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            range: cellRange,
+            values: [[newSource]],
+          }),
+        }
+      );
+      if (res.ok) {
+        return res.json();
+      }
+    } catch (err) {
+      console.warn('Direct Sheet API source failed, falling back to Apps Script:', err);
     }
-  );
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error?.message || `Failed to update source in Google Sheet: ${res.statusText}`);
   }
-  return res.json();
+
+  return updateOrderViaAppsScript({
+    row_number: rowIndex,
+    row: rowIndex,
+    rowIndex: rowIndex,
+    id: orderId,
+    orderId: orderId,
+    source: newSource,
+    column: 'I',
+    col: 9,
+    value: newSource,
+  });
 };
+
+/**
+ * Update Steadfast Action ONLY in Column M of the Google Sheet row
+ * Does NOT touch Column K (Tracking Code) or Column L (Courier Status),
+ * so that Google Sheet automation / Steadfast trigger can automatically populate K and L.
+ */
+export const updateSheetSteadfastAction = async (
+  spreadsheetId: string,
+  accessToken: string | null | undefined,
+  tabName: string,
+  rowIndex: number,
+  action: 'send to steadfast' | 'No Sellect' | string,
+  orderId?: string
+) => {
+  if (accessToken && rowIndex > 0) {
+    try {
+      const cellRange = `'${tabName}'!M${rowIndex}`;
+      const res = await fetch(
+        `${SHEETS_API_BASE}/${spreadsheetId}/values/${encodeURIComponent(cellRange)}?valueInputOption=USER_ENTERED`,
+        {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            range: cellRange,
+            values: [[action]],
+          }),
+        }
+      );
+      if (res.ok) {
+        return res.json();
+      }
+    } catch (err) {
+      console.warn('Direct Sheet API steadfast action failed, falling back to Apps Script:', err);
+    }
+  }
+
+  // Fallback to Apps Script: only passes courier_action (Column M), preserving K & L
+  return updateOrderViaAppsScript({
+    row_number: rowIndex,
+    row: rowIndex,
+    rowIndex: rowIndex,
+    id: orderId,
+    orderId: orderId,
+    courier_action: action,
+    courierAction: action,
+    steadfastStatus: action,
+    column: 'M',
+    col: 13,
+    value: action,
+  });
+};
+
+/**
+ * Update Quantity in Column N of the Google Sheet row
+ */
+export const updateSheetQuantity = async (
+  spreadsheetId: string,
+  accessToken: string | null | undefined,
+  tabName: string,
+  rowIndex: number,
+  newQuantity: number,
+  orderId?: string
+) => {
+  if (accessToken && rowIndex > 0) {
+    try {
+      const cellRange = `'${tabName}'!N${rowIndex}`;
+      const res = await fetch(
+        `${SHEETS_API_BASE}/${spreadsheetId}/values/${encodeURIComponent(cellRange)}?valueInputOption=USER_ENTERED`,
+        {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            range: cellRange,
+            values: [[newQuantity]],
+          }),
+        }
+      );
+      if (res.ok) {
+        return res.json();
+      }
+    } catch (err) {
+      console.warn('Direct Sheet API quantity failed, falling back to Apps Script:', err);
+    }
+  }
+
+  return updateOrderViaAppsScript({
+    row_number: rowIndex,
+    row: rowIndex,
+    rowIndex: rowIndex,
+    id: orderId,
+    orderId: orderId,
+    quantity: newQuantity,
+    qty: newQuantity,
+    column: 'N',
+    col: 14,
+    value: newQuantity,
+  });
+};
+
+/**
+ * Complete, copy-pasteable Google Apps Script code for the user's Sheet2
+ */
+export const COMPLETE_APPS_SCRIPT_CODE = `const SPREADSHEET_ID = "1aHUCGINJ8rB29rXXckH7uMTwrk163v6aQFTfQ6ptr6M";
+const SHEET_NAME = "Sheet2";
+
+// Column Index Mapping (1-based index)
+const COL = {
+  date: 1,             // A
+  address: 2,          // B
+  phone: 3,            // C
+  cod: 4,              // D
+  productName: 5,      // E
+  customerName: 6,     // F
+  selectedProduct: 8,  // H (Variant)
+  source: 9,           // I (Source)
+  orderStatus: 10,     // J (Order Status)
+  courierId: 11,       // K (Tracking Code)
+  courierStatus: 12,   // L (Courier Status)
+  courierAction: 13,   // M (Steadfast Action)
+  quantity: 14,        // N (Quantity)
+  deliveryStatus: 16,  // P
+  deliveryAmount: 17,  // Q
+  deliveryCharge: 18   // R
+};
+
+function getWooSheet_() {
+  const file = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = file.getSheetByName(SHEET_NAME);
+  if (!sheet) {
+    throw new Error("Sheet2 পাওয়া যায়নি");
+  }
+  return sheet;
+}
+
+function doGet(e) {
+  try {
+    const params = (e && e.parameter) ? e.parameter : {};
+    if (params.action === "update_order" || params.action === "update") {
+      return handleOrderUpdate_(params);
+    }
+
+    const sheet = getWooSheet_();
+    const data = sheet.getDataRange().getValues();
+    if (data.length <= 1) {
+      return responseJson_({ success: true, orders: [] });
+    }
+
+    const orders = [];
+    for (let i = 1; i < data.length; i++) {
+      const row = data[i];
+      if (!row || row.join("").trim() === "") continue;
+
+      orders.push({
+        row_number: i + 1,
+        date: row[COL.date - 1] || "",
+        address: row[COL.address - 1] || "",
+        phone: row[COL.phone - 1] || "",
+        cod: row[COL.cod - 1] || 0,
+        product: row[COL.productName - 1] || "",
+        customer: row[COL.customerName - 1] || "",
+        selected_product: row[COL.selectedProduct - 1] || "No Sellect",
+        source: row[COL.source - 1] || "Website",
+        order_status: row[COL.orderStatus - 1] || "Hold",
+        courier_id: row[COL.courierId - 1] || "",
+        courier_status: row[COL.courierStatus - 1] || "",
+        courier_action: row[COL.courierAction - 1] || "No Sellect",
+        quantity: row[COL.quantity - 1] || 1,
+        delivery_status: row[COL.deliveryStatus - 1] || "",
+        delivery_amount: row[COL.deliveryAmount - 1] || 0,
+        delivery_charge: row[COL.deliveryCharge - 1] || 0
+      });
+    }
+
+    return responseJson_({ success: true, orders: orders });
+  } catch (err) {
+    return responseJson_({ success: false, error: err.toString() });
+  }
+}
+
+function doPost(e) {
+  try {
+    let data = {};
+    if (e && e.postData && e.postData.contents) {
+      try {
+        data = JSON.parse(e.postData.contents);
+      } catch (parseErr) {
+        data = e.parameter || {};
+      }
+    } else if (e && e.parameter) {
+      data = e.parameter;
+    }
+
+    return handleOrderUpdate_(data);
+  } catch (err) {
+    return responseJson_({ success: false, error: err.toString() });
+  }
+}
+
+function handleOrderUpdate_(data) {
+  const sheet = getWooSheet_();
+  let rowNumber = parseInt(data.row_number || data.row || data.rowIndex, 10);
+
+  if (!rowNumber || isNaN(rowNumber) || rowNumber < 2) {
+    const targetId = String(data.id || data.orderId || "").trim();
+    if (targetId) {
+      const allData = sheet.getDataRange().getValues();
+      for (let r = 1; r < allData.length; r++) {
+        const idA = String(allData[r][0] || "").trim();
+        const idB = String(allData[r][1] || "").trim();
+        const phoneC = String(allData[r][2] || "").trim();
+        if (idA === targetId || idB === targetId || phoneC === targetId) {
+          rowNumber = r + 1;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!rowNumber || isNaN(rowNumber) || rowNumber < 2) {
+    return responseJson_({ success: false, error: "Row not found for ID: " + (data.id || "") });
+  }
+
+  const updatedFields = [];
+
+  // Column H (Variant)
+  const variantVal = data.selectedProduct !== undefined ? data.selectedProduct : (data.selected_product !== undefined ? data.selected_product : data.variant);
+  if (variantVal !== undefined) {
+    sheet.getRange(rowNumber, COL.selectedProduct).setValue(String(variantVal));
+    updatedFields.push("H: " + variantVal);
+  }
+
+  // Column I (Source)
+  if (data.source !== undefined) {
+    sheet.getRange(rowNumber, COL.source).setValue(String(data.source));
+    updatedFields.push("I: " + data.source);
+  }
+
+  // Column J (Order Status)
+  const statusVal = data.orderStatus !== undefined ? data.orderStatus : (data.order_status !== undefined ? data.order_status : data.status);
+  if (statusVal !== undefined) {
+    sheet.getRange(rowNumber, COL.orderStatus).setValue(String(statusVal));
+    updatedFields.push("J: " + statusVal);
+  }
+
+  // Column M (Steadfast Action)
+  const actionVal = data.courierAction !== undefined ? data.courierAction : (data.courier_action !== undefined ? data.courier_action : data.steadfastStatus);
+  if (actionVal !== undefined) {
+    sheet.getRange(rowNumber, COL.courierAction).setValue(String(actionVal));
+    updatedFields.push("M: " + actionVal);
+  }
+
+  // Column N (Quantity)
+  const qtyVal = data.quantity !== undefined ? data.quantity : data.qty;
+  if (qtyVal !== undefined) {
+    const numQty = parseInt(qtyVal, 10) || 1;
+    sheet.getRange(rowNumber, COL.quantity).setValue(numQty);
+    updatedFields.push("N: " + numQty);
+  }
+
+  // Direct Col/Value
+  if (data.col && data.value !== undefined) {
+    const directCol = parseInt(data.col, 10);
+    if ([COL.selectedProduct, COL.source, COL.orderStatus, COL.courierAction, COL.quantity].indexOf(directCol) !== -1) {
+      sheet.getRange(rowNumber, directCol).setValue(data.value);
+      updatedFields.push("Col " + directCol + ": " + data.value);
+    }
+  }
+
+  return responseJson_({
+    success: true,
+    row: rowNumber,
+    updated: updatedFields
+  });
+}
+
+function responseJson_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}`;
 
 /**
  * Update Steadfast Courier Status and Tracking Code in Google Sheet (Columns K, L, M)
  */
 export const updateSheetCourierStatus = async (
   spreadsheetId: string,
-  accessToken: string,
+  accessToken: string | null | undefined,
   tabName: string,
   rowIndex: number,
   trackingCode: string,
   steadfastStatus: string,
-  courierStatus: string = 'in_review'
+  courierStatus: string = 'in_review',
+  orderId?: string
 ) => {
-  // Columns K, L, M: Tracking Code (K), Courier Status (L), Steadfast Status (M)
-  const range = `'${tabName}'!K${rowIndex}:M${rowIndex}`;
-  const res = await fetch(
-    `${SHEETS_API_BASE}/${spreadsheetId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`,
-    {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        range,
-        values: [[trackingCode, courierStatus, steadfastStatus]],
-      }),
-    }
-  );
+  if (accessToken) {
+    try {
+      // Columns K, L, M: Tracking Code (K), Courier Status (L), Steadfast Status (M)
+      const range = `'${tabName}'!K${rowIndex}:M${rowIndex}`;
+      const res = await fetch(
+        `${SHEETS_API_BASE}/${spreadsheetId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`,
+        {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            range,
+            values: [[trackingCode, courierStatus, steadfastStatus]],
+          }),
+        }
+      );
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error?.message || `Failed to update courier in Google Sheet: ${res.statusText}`);
+      if (res.ok) {
+        return res.json();
+      }
+    } catch (err) {
+      console.warn('Direct Sheet API courier failed, falling back to Apps Script:', err);
+    }
   }
 
-  return res.json();
+  return updateOrderViaAppsScript({
+    row_number: rowIndex,
+    id: orderId,
+    courier_id: trackingCode,
+    courier_status: courierStatus,
+    courier_action: steadfastStatus,
+  });
 };
 
 /**

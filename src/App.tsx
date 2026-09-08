@@ -28,6 +28,8 @@ import {
   updateSheetVariant,
   updateSheetSource,
   updateSheetCourierStatus,
+  updateSheetSteadfastAction,
+  updateSheetQuantity,
   appendSheetOrder,
   getSheetProducts,
 } from './services/sheets';
@@ -104,31 +106,36 @@ export default function App() {
   const syncWithSheet = async (
     targetSpreadsheetId: string = spreadsheetId,
     targetToken: string | null = accessToken,
-    targetTab: string = orderSheetTab
+    targetTab: string = orderSheetTab,
+    silent: boolean = false
   ) => {
-    setIsSyncing(true);
+    if (!silent) setIsSyncing(true);
     try {
       const cleanId = extractSpreadsheetId(targetSpreadsheetId);
       const sheetResult = await getSheetOrders(cleanId, targetToken || undefined, targetTab);
 
       if (sheetResult.orders && sheetResult.orders.length > 0) {
         setOrders(sheetResult.orders);
-        showToast(
-          `গুগল শিট (${targetTab}) থেকে ${sheetResult.orders.length} টি অর্ডার সফলভাবে সিঙ্ক হয়েছে!`
-        );
-      } else {
+        if (!silent) {
+          showToast(
+            `গুগল শিট (${targetTab}) থেকে ${sheetResult.orders.length} টি অর্ডার সফলভাবে সিঙ্ক হয়েছে!`
+          );
+        }
+      } else if (!silent) {
         showToast(`শিট (${targetTab}) থেকে কোনো অর্ডার পাওয়া যায়নি।`, 'error');
       }
     } catch (err: any) {
       console.warn('Sync sheet error:', err);
-      if (err instanceof AuthDomainError) {
-        setAuthErrorDomain(err.domain);
-        setIsAuthHelpOpen(true);
-      } else {
-        showToast(`শিট সিঙ্ক তথ্য: ${err.message || 'ত্রুটি'}`, 'error');
+      if (!silent) {
+        if (err instanceof AuthDomainError) {
+          setAuthErrorDomain(err.domain);
+          setIsAuthHelpOpen(true);
+        } else {
+          showToast(`শিট সিঙ্ক তথ্য: ${err.message || 'ত্রুটি'}`, 'error');
+        }
       }
     } finally {
-      setIsSyncing(false);
+      if (!silent) setIsSyncing(false);
     }
   };
 
@@ -172,99 +179,93 @@ export default function App() {
     return a.id === b.id;
   };
 
+  // Helper to ensure valid sheet row index (>= 2, never 0)
+  const resolveRowIndex = (order: Order): number => {
+    if (order.rowIndex && order.rowIndex > 1) {
+      return order.rowIndex;
+    }
+    const idx = orders.findIndex((o) => o.id === order.id);
+    return idx !== -1 ? idx + 2 : 2;
+  };
+
   // 1. Update Status in Column J (isolated per-order)
   const handleUpdateOrderStatus = async (order: Order, newStatus: OrderStatus) => {
+    const targetRow = resolveRowIndex(order);
     setOrders((prev) =>
-      prev.map((o) => (isSameOrder(o, order) ? { ...o, status: newStatus } : o))
+      prev.map((o) => (isSameOrder(o, order) ? { ...o, status: newStatus, rowIndex: targetRow } : o))
     );
 
     if (selectedOrderForView && isSameOrder(selectedOrderForView, order)) {
-      setSelectedOrderForView((prev) => (prev ? { ...prev, status: newStatus } : null));
+      setSelectedOrderForView((prev) => (prev ? { ...prev, status: newStatus, rowIndex: targetRow } : null));
     }
 
-    if (!accessToken) {
-      showToast(`অর্ডার #${order.id} স্ট্যাটাস '${newStatus}' হয়েছে। ⚠️ গুগল শিটে সেভ করতে গুগল অ্যাকাউন্ট কানেক্ট করুন!`, 'error');
-      return;
-    }
-
-    if (order.rowIndex) {
-      try {
-        await updateSheetOrderStatus(
-          spreadsheetId,
-          accessToken,
-          orderSheetTab,
-          order.rowIndex,
-          newStatus
-        );
-        showToast(`✅ গুগল শিটে অর্ডার #${order.id} এর স্ট্যাটাস '${newStatus}' আপডেট হয়েছে!`);
-      } catch (err: any) {
-        console.error('Failed to sync status update to sheet:', err);
-        showToast(`❌ গুগল শিটে স্ট্যাটাস সেভ ব্যর্থ: ${err.message || 'পারমিশন নেই বা টোকেন মেয়াদোত্তীর্ণ'}`, 'error');
-      }
+    try {
+      await updateSheetOrderStatus(
+        spreadsheetId,
+        accessToken,
+        orderSheetTab,
+        targetRow,
+        newStatus,
+        order.id
+      );
+      showToast(`✅ গুগল শিটে অর্ডার #${order.id} এর স্ট্যাটাস (Col J) '${newStatus}' আপডেট হয়েছে!`);
+    } catch (err: any) {
+      console.error('Failed to sync status update to sheet:', err);
+      showToast(`❌ গুগল শিটে স্ট্যাটাস সেভ ব্যর্থ: ${err.message || 'ত্রুটি'}`, 'error');
     }
   };
 
   // 2. Update Variant in Column H (isolated per-order)
   const handleUpdateVariant = async (order: Order, newVariant: string) => {
+    const targetRow = resolveRowIndex(order);
     setOrders((prev) =>
-      prev.map((o) => (isSameOrder(o, order) ? { ...o, variant: newVariant } : o))
+      prev.map((o) => (isSameOrder(o, order) ? { ...o, variant: newVariant, rowIndex: targetRow } : o))
     );
 
     if (selectedOrderForView && isSameOrder(selectedOrderForView, order)) {
-      setSelectedOrderForView((prev) => (prev ? { ...prev, variant: newVariant } : null));
+      setSelectedOrderForView((prev) => (prev ? { ...prev, variant: newVariant, rowIndex: targetRow } : null));
     }
 
-    if (!accessToken) {
-      showToast(`অর্ডার #${order.id} ভ্যারিয়েন্ট '${newVariant}' হয়েছে। ⚠️ গুগল শিটে সেভ করতে গুগল অ্যাকাউন্ট কানেক্ট করুন!`, 'error');
-      return;
-    }
-
-    if (order.rowIndex) {
-      try {
-        await updateSheetVariant(
-          spreadsheetId,
-          accessToken,
-          orderSheetTab,
-          order.rowIndex,
-          newVariant
-        );
-        showToast(`✅ গুগল শিটে অর্ডার #${order.id} এর ভ্যারিয়েন্ট '${newVariant}' আপডেট হয়েছে!`);
-      } catch (err: any) {
-        console.error('Failed to sync variant update to sheet:', err);
-        showToast(`❌ গুগল শিটে ভ্যারিয়েন্ট সেভ ব্যর্থ: ${err.message || 'পারমিশন নেই বা টোকেন মেয়াদোত্তীর্ণ'}`, 'error');
-      }
+    try {
+      await updateSheetVariant(
+        spreadsheetId,
+        accessToken,
+        orderSheetTab,
+        targetRow,
+        newVariant,
+        order.id
+      );
+      showToast(`✅ গুগল শিটে অর্ডার #${order.id} এর ভ্যারিয়েন্ট (Col H) '${newVariant}' আপডেট হয়েছে!`);
+    } catch (err: any) {
+      console.error('Failed to sync variant update to sheet:', err);
+      showToast(`❌ গুগল শিটে ভ্যারিয়েন্ট সেভ ব্যর্থ: ${err.message || 'ত্রুটি'}`, 'error');
     }
   };
 
   // 3. Update Source in Column I (isolated per-order)
   const handleUpdateSource = async (order: Order, newSource: string) => {
+    const targetRow = resolveRowIndex(order);
     setOrders((prev) =>
-      prev.map((o) => (isSameOrder(o, order) ? { ...o, source: newSource } : o))
+      prev.map((o) => (isSameOrder(o, order) ? { ...o, source: newSource, rowIndex: targetRow } : o))
     );
 
     if (selectedOrderForView && isSameOrder(selectedOrderForView, order)) {
-      setSelectedOrderForView((prev) => (prev ? { ...prev, source: newSource } : null));
+      setSelectedOrderForView((prev) => (prev ? { ...prev, source: newSource, rowIndex: targetRow } : null));
     }
 
-    if (!accessToken) {
-      showToast(`অর্ডার #${order.id} সোর্স '${newSource}' হয়েছে। ⚠️ গুগল শিটে সেভ করতে গুগল অ্যাকাউন্ট কানেক্ট করুন!`, 'error');
-      return;
-    }
-
-    if (order.rowIndex) {
-      try {
-        await updateSheetSource(
-          spreadsheetId,
-          accessToken,
-          orderSheetTab,
-          order.rowIndex,
-          newSource
-        );
-        showToast(`✅ গুগল শিটে অর্ডার #${order.id} এর সোর্স '${newSource}' আপডেট হয়েছে!`);
-      } catch (err: any) {
-        console.error('Failed to sync source update to sheet:', err);
-        showToast(`❌ গুগল শিটে সোর্স সেভ ব্যর্থ: ${err.message || 'পারমিশন নেই বা টোকেন মেয়াদোত্তীর্ণ'}`, 'error');
-      }
+    try {
+      await updateSheetSource(
+        spreadsheetId,
+        accessToken,
+        orderSheetTab,
+        targetRow,
+        newSource,
+        order.id
+      );
+      showToast(`✅ গুগল শিটে অর্ডার #${order.id} এর সোর্স (Col I) '${newSource}' আপডেট হয়েছে!`);
+    } catch (err: any) {
+      console.error('Failed to sync source update to sheet:', err);
+      showToast(`❌ গুগল শিটে সোর্স সেভ ব্যর্থ: ${err.message || 'ত্রুটি'}`, 'error');
     }
   };
 
@@ -278,27 +279,21 @@ export default function App() {
       setSelectedOrderForView((prev) => (prev ? { ...prev, courierStatus: newCourierStatus } : null));
     }
 
-    if (!accessToken) {
-      showToast(`ডেলিভারি স্ট্যাটাস '${newCourierStatus}' হয়েছে। ⚠️ গুগল শিটে সেভ করতে গুগল অ্যাকাউন্ট কানেক্ট করুন!`, 'error');
-      return;
-    }
-
-    if (order.rowIndex) {
-      try {
-        await updateSheetCourierStatus(
-          spreadsheetId,
-          accessToken,
-          orderSheetTab,
-          order.rowIndex,
-          order.trackingCode || '',
-          order.steadfastStatus || 'send to steadfast',
-          newCourierStatus
-        );
-        showToast(`✅ গুগল শিটে ডেলিভারি স্ট্যাটাস '${newCourierStatus}' আপডেট হয়েছে!`);
-      } catch (err: any) {
-        console.error('Failed to sync courier status update to sheet:', err);
-        showToast(`❌ গুগল শিটে ডেলিভারি স্ট্যাটাস সেভ ব্যর্থ: ${err.message || 'পারমিশন নেই বা টোকেন মেয়াদোত্তীর্ণ'}`, 'error');
-      }
+    try {
+      await updateSheetCourierStatus(
+        spreadsheetId,
+        accessToken,
+        orderSheetTab,
+        order.rowIndex || 0,
+        order.trackingCode || '',
+        order.steadfastStatus || 'send to steadfast',
+        newCourierStatus,
+        order.id
+      );
+      showToast(`✅ গুগল শিটে ডেলিভারি স্ট্যাটাস '${newCourierStatus}' আপডেট হয়েছে!`);
+    } catch (err: any) {
+      console.error('Failed to sync courier status update to sheet:', err);
+      showToast(`❌ গুগল শিটে ডেলিভারি স্ট্যাটাস সেভ ব্যর্থ: ${err.message || 'ত্রুটি'}`, 'error');
     }
   };
 
@@ -311,11 +306,14 @@ export default function App() {
     }
   };
 
-  // 4. Steadfast Courier Action (Toggle 4)
+  // 4. Steadfast Courier Action (Toggle in Column M only)
+  // "send to steadfast dila k and l a automatic j data ashbe seta sodo read kore nicer 2ta button a update korbe, r kisoi jeno change na korta hoy"
   const handleToggleSteadfast = async (
     order: Order,
     action: 'No Sellect' | 'send to steadfast'
   ): Promise<boolean> => {
+    const targetRow = resolveRowIndex(order);
+
     if (action === 'No Sellect') {
       setOrders((prev) =>
         prev.map((o) =>
@@ -323,6 +321,7 @@ export default function App() {
             ? {
                 ...o,
                 steadfastStatus: 'No Sellect',
+                rowIndex: targetRow,
               }
             : o
         )
@@ -330,31 +329,23 @@ export default function App() {
 
       if (selectedOrderForView && isSameOrder(selectedOrderForView, order)) {
         setSelectedOrderForView((prev) =>
-          prev ? { ...prev, steadfastStatus: 'No Sellect' } : null
+          prev ? { ...prev, steadfastStatus: 'No Sellect', rowIndex: targetRow } : null
         );
       }
 
-      if (!accessToken) {
-        showToast(`অর্ডার #${order.id} 'No Sellect' হয়েছে। ⚠️ গুগল শিটে সেভ করতে গুগল অ্যাকাউন্ট কানেক্ট করুন!`, 'error');
-        return true;
-      }
-
-      if (order.rowIndex) {
-        try {
-          await updateSheetCourierStatus(
-            spreadsheetId,
-            accessToken,
-            orderSheetTab,
-            order.rowIndex,
-            order.trackingCode || '',
-            'No Sellect',
-            order.courierStatus || ''
-          );
-          showToast(`✅ গুগল শিটে অর্ডার #${order.id} 'No Sellect' আপডেট হয়েছে!`);
-        } catch (err: any) {
-          console.error('Failed to sync No Sellect to sheet:', err);
-          showToast(`❌ গুগল শিটে আপডেট ব্যর্থ: ${err.message || 'শিটে পারমিশন নেই'}`, 'error');
-        }
+      try {
+        await updateSheetSteadfastAction(
+          spreadsheetId,
+          accessToken,
+          orderSheetTab,
+          targetRow,
+          'No Sellect',
+          order.id
+        );
+        showToast(`✅ গুগল শিটে (কলাম M) 'No Sellect' আপডেট হয়েছে!`);
+      } catch (err: any) {
+        console.error('Failed to sync No Sellect to sheet:', err);
+        showToast(`❌ গুগল শিটে আপডেট ব্যর্থ: ${err.message || 'ত্রুটি'}`, 'error');
       }
       return true;
     }
@@ -369,26 +360,16 @@ export default function App() {
       return false;
     }
 
-    // Preserve existing tracking code if present; otherwise generate a 9-digit code like sheet (e.g. 293694064)
-    const existingTracking = order.trackingCode && order.trackingCode.trim().length > 0;
-    const finalTracking = existingTracking
-      ? order.trackingCode!.trim()
-      : `29${Math.floor(1000000 + Math.random() * 9000000)}`;
-    const finalCourierStatus =
-      existingTracking && order.courierStatus
-        ? order.courierStatus
-        : 'in_review';
+    // Update ONLY Column M (steadfastStatus) - do NOT overwrite K (Tracking) or L (Courier Status)
     const finalSteadfastStatus = 'send to steadfast';
 
-    // Local state update
     setOrders((prev) =>
       prev.map((o) =>
         isSameOrder(o, order)
           ? {
               ...o,
-              trackingCode: finalTracking,
               steadfastStatus: finalSteadfastStatus,
-              courierStatus: finalCourierStatus,
+              rowIndex: targetRow,
             }
           : o
       )
@@ -399,42 +380,67 @@ export default function App() {
         prev
           ? {
               ...prev,
-              trackingCode: finalTracking,
               steadfastStatus: finalSteadfastStatus,
-              courierStatus: finalCourierStatus,
+              rowIndex: targetRow,
             }
           : null
       );
     }
 
-    if (!accessToken) {
-      showToast(
-        `অর্ডার #${order.id} এ ট্র্যাকিং কোড (${finalTracking}) বসেছে। ⚠️ গুগল শিটে এন্ট্রি হতে পারেনি: গুগল অ্যাকাউন্ট কানেক্ট করা নেই! উপরে 'কানেক্ট' এ ক্লিক করে সাইন-ইন করুন।`,
-        'error'
+    try {
+      // Write strictly to Column M
+      await updateSheetSteadfastAction(
+        spreadsheetId,
+        accessToken,
+        orderSheetTab,
+        targetRow,
+        finalSteadfastStatus,
+        order.id
       );
-      return true;
-    }
+      showToast(`✅ কলাম M: 'send to steadfast' আপডেট হয়েছে! অটোমেশন কলাম K ও L রিড করা হচ্ছে...`);
 
-    // Google Sheet columns K (Tracking), L (Courier Status), M (Steadfast)
-    if (order.rowIndex) {
-      try {
-        await updateSheetCourierStatus(
-          spreadsheetId,
-          accessToken,
-          orderSheetTab,
-          order.rowIndex,
-          finalTracking,
-          finalSteadfastStatus,
-          finalCourierStatus
-        );
-        showToast(`✅ গুগল শিটে (কলাম K, L, M) ট্র্যাকিং: ${finalTracking} সফলভাবে এন্ট্রি হয়েছে!`);
-      } catch (err: any) {
-        console.error('Failed to sync steadfast tracking to sheet:', err);
-        showToast(`❌ গুগল শিটে স্টেডফাস্ট এন্ট্রি ব্যর্থ: ${err.message || 'শিটে এডিট পারমিশন নেই বা টোকেন মেয়াদোত্তীর্ণ'}`, 'error');
-      }
+      // Automatically read fresh Column K and L from Google Sheet automation after delay
+      setTimeout(() => {
+        syncWithSheet(spreadsheetId, accessToken, orderSheetTab, true);
+      }, 2500);
+
+      setTimeout(() => {
+        syncWithSheet(spreadsheetId, accessToken, orderSheetTab, true);
+      }, 5500);
+    } catch (err: any) {
+      console.error('Failed to sync steadfast action to sheet:', err);
+      showToast(`❌ গুগল শিটে কলাম M সেভ ব্যর্থ: ${err.message || 'ত্রুটি'}`, 'error');
     }
 
     return true;
+  };
+
+  // 5. Update Order Quantity in Column N (isolated per-order)
+  const handleUpdateQuantity = async (order: Order, newQuantity: number) => {
+    if (newQuantity < 1) return;
+    const targetRow = resolveRowIndex(order);
+    setOrders((prev) =>
+      prev.map((o) => (isSameOrder(o, order) ? { ...o, quantity: newQuantity, rowIndex: targetRow } : o))
+    );
+
+    if (selectedOrderForView && isSameOrder(selectedOrderForView, order)) {
+      setSelectedOrderForView((prev) => (prev ? { ...prev, quantity: newQuantity, rowIndex: targetRow } : null));
+    }
+
+    try {
+      await updateSheetQuantity(
+        spreadsheetId,
+        accessToken,
+        orderSheetTab,
+        targetRow,
+        newQuantity,
+        order.id
+      );
+      showToast(`✅ গুগল শিটে অর্ডার #${order.id} এর পরিমাণ (Col N) '${newQuantity}' আপডেট হয়েছে!`);
+    } catch (err: any) {
+      console.error('Failed to sync quantity update to sheet:', err);
+      showToast(`❌ গুগল শিটে পরিমাণ সেভ ব্যর্থ: ${err.message || 'ত্রুটি'}`, 'error');
+    }
   };
 
   // Alias for components expecting handleSendToSteadfast
@@ -573,6 +579,7 @@ export default function App() {
               onUpdateOrderStatus={handleUpdateOrderStatus}
               onUpdateVariant={handleUpdateVariant}
               onUpdateSource={handleUpdateSource}
+              onUpdateQuantity={handleUpdateQuantity}
               onUpdateCourierStatus={handleUpdateCourierStatus}
               onToggleSteadfast={handleToggleSteadfast}
               onDeleteOrder={handleDeleteOrder}
